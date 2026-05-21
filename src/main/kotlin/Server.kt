@@ -1,7 +1,6 @@
 package org.example
 
 import java.io.*
-import java.net.ServerSocket
 import java.nio.charset.StandardCharsets
 import java.time.ZonedDateTime
 import java.util.*
@@ -73,8 +72,7 @@ fun startServer(dbFilename: String) {
     val writer = OutputStreamWriter(System.`out`, "UTF-8")
     val history: MutableList<String> = mutableListOf()
 
-    AppLogger.setLogger("JUL")
-    // можно выбрать
+    AppLogger.setLogger("Log4J2")
     // AppLogger.setLogger("Logback")
     // AppLogger.setLogger("Log4J2")
 
@@ -97,7 +95,7 @@ fun serverMainLoop(
     val reader = InputStreamReader(System.`in`, "UTF-8")
     val readerScanner = Scanner(reader)
 
-    val transport = ServerTransportFactory.create(TransportType.TCP_STREAM, 8323)
+    val transport = ServerUdpTransport(8323, ServerClientsMap())
     val messenger = ServerCommandMessenger(transport)
 
     processCommandsPrompted(
@@ -124,6 +122,7 @@ fun serverMainLoop(
                                 override fun dbFilename(): String = dbFilename
                                 override fun senderId(): ClientId = senderId
                                 override fun serverClientsMap(): ServerClientsMap<*> = transport.clientsMap()
+                                override fun executionHistory(): MutableList<String> = mutableListOf()
                             }
                         )
                         outputWriter.flush()
@@ -141,6 +140,7 @@ fun serverMainLoop(
         history,
         db,
         dbFilename,
+        mutableListOf(),
         transport.clientsMap()
     )
 }

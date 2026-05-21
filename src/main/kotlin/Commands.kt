@@ -1,13 +1,10 @@
 package org.example
 
 import com.fasterxml.jackson.annotation.JsonCreator
-import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import java.io.File
 import java.io.OutputStreamWriter
-import java.net.InetSocketAddress
 import java.util.Scanner
-import kotlin.collections.get
 import kotlin.reflect.KClass
 
 /**
@@ -46,6 +43,7 @@ interface CommandCommonContext {
 interface CommandPrepareContext : CommandCommonContext {
     fun scanner(): AsyncCommandScanner
     fun args(): List<String>
+    fun executionHistory(): MutableList<String>
 }
 
 interface LocalCommandContext : CommandCommonContext {
@@ -58,6 +56,7 @@ interface ServerCommandContext : LocalCommandContext {
     fun dbFilename(): String
     fun senderId(): ClientId?
     fun serverClientsMap(): ServerClientsMap<*>
+    fun executionHistory(): MutableList<String>
 }
 
 /**
@@ -151,7 +150,11 @@ class UpdateIdCommand @JsonCreator constructor() : ServerCommand<Ticket> {
         return TerminalBuilder.build(Ticket::class, context.scanner().inner())!!.copy(id = id)
     }
     override fun processServer(context: ServerCommandContext, data: Ticket) {
-        context.db().update({ it.id == data.id }, { data }, Ticket::class)
+        if (context.db().query(Ticket::class)?.none { it.id == data.id } == true) {
+            context.output().write("Нет элемента с таким id")
+        } else {
+            context.db().update({ it.id == data.id }, { data }, Ticket::class)
+        }
     }
 }
 
@@ -169,7 +172,11 @@ class RemoveByIdCommand @JsonCreator constructor() : ServerCommand<Long> {
         return context.args()[0].toLongOrNull()
     }
     override fun processServer(context: ServerCommandContext, data: Long) {
-        context.db().remove({ it.id == data }, Ticket::class)
+        if (context.db().query(Ticket::class)?.none { it.id == data } == true) {
+            context.output().write("Нет элемента с таким id")
+        } else {
+            context.db().remove({ it.id == data }, Ticket::class)
+        }
     }
 }
 
@@ -214,6 +221,11 @@ class ExecuteScriptCommand @JsonCreator constructor() : ServerCommand<String> {
             return null
         }
         val fileName = context.args()[0]
+        if (context.executionHistory().contains(fileName)) {
+            context.output().write("Ошибка: рекурсия")
+            return ""
+        }
+        context.executionHistory().add(fileName)
         File(fileName).reader().use { reader ->
             return reader.readText()
         }
@@ -235,9 +247,13 @@ class ExecuteScriptCommand @JsonCreator constructor() : ServerCommand<String> {
             context.history(),
             context.db(),
             context.dbFilename(),
+            context.executionHistory(),
             context.serverClientsMap(),
             {}
         )
+        if (context.executionHistory().isNotEmpty()) {
+            context.executionHistory().removeLast()
+        }
     }
 }
 
@@ -406,6 +422,7 @@ fun processCommands(
     history: MutableList<String>,
     db: Database<*>,
     dbFilename: String,
+    executionHistory: MutableList<String>,
     serverClientsMap: ServerClientsMap<*>,
     beforeReadLineCallback: () -> Unit,
 ) {
@@ -432,6 +449,7 @@ fun processCommands(
             override fun scanner(): AsyncCommandScanner = asyncScanner
             override fun output(): OutputStreamWriter = output
             override fun args(): List<String> = args
+            override fun executionHistory(): MutableList<String> = executionHistory
         }
 
         val ctx = object : ServerCommandContext {
@@ -445,6 +463,7 @@ fun processCommands(
             override fun db(): Database<*> = db
             override fun dbFilename(): String = dbFilename
             override fun senderId(): ClientId? = null
+            override fun executionHistory(): MutableList<String> = executionHistory
             override fun serverClientsMap(): ServerClientsMap<*> = serverClientsMap
         }
 
@@ -484,6 +503,7 @@ fun processCommandsPrompted(
     history: MutableList<String>,
     db: Database<*>,
     dbFilename: String,
+    executionHistory: MutableList<String>,
     serverClientsMap: ServerClientsMap<*>
 ) {
     processCommands(
@@ -494,6 +514,7 @@ fun processCommandsPrompted(
         history,
         db,
         dbFilename,
+        executionHistory,
         serverClientsMap
     ) { print("> ") }
 }

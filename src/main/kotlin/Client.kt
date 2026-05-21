@@ -2,11 +2,10 @@ package org.example
 
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
+import java.net.SocketTimeoutException
 import java.util.Scanner
 
-fun startClient(
-
-) {
+fun startClient() {
     val commands = allClientCommands()
     val writer = OutputStreamWriter(System.`out`, "UTF-8")
     val history: MutableList<String> = mutableListOf()
@@ -35,11 +34,7 @@ fun clientMainLoop(
     }
 
     while (!shouldExit.value) {
-        ClientTransportFactory.create(
-            TransportType.TCP_STREAM,
-            "localhost",
-            8323
-        ).use { transport ->
+        ClientUdpTransport("localhost", 8323).use { transport ->
             ClientCommandMessenger(transport).use { messenger ->
                 processClientMainLoop(
                     shouldExit,
@@ -86,6 +81,7 @@ fun processClientMainLoop(
                 override fun scanner(): AsyncCommandScanner = asyncScanner
                 override fun output(): OutputStreamWriter = output
                 override fun args(): List<String> = args
+                override fun executionHistory(): MutableList<String> = mutableListOf()
             }
 
             val ctx = object : LocalCommandContext {
@@ -114,13 +110,20 @@ fun processClientMainLoop(
                         val typedCommand = command as ServerCommand<Any?>
                         typedCommand.prepare(prepareCtx)?.let { data ->
                             messenger.sendCommand(typedCommand, data)
-                            while (true) {
-                                messenger.tryReceiveResponse()?.let { resp ->
-                                    print(resp.output)
-                                    break
+
+                            var gotResponse = false
+                            repeat(60) {
+                                if (!gotResponse) {
+                                    messenger.tryReceiveResponse()?.let { resp ->
+                                        print(resp.output)
+                                        gotResponse = true
+                                        return@repeat
+                                    }
+                                    Thread.sleep(50)
                                 }
                             }
-                            Thread.sleep(50)
+
+                            if (!gotResponse) throw SocketTimeoutException("таймаут сервера")
                         }
                     }
 
@@ -133,7 +136,6 @@ fun processClientMainLoop(
             }
         } catch (e: Exception) {
             println("Ошибка: ${e.message}")
-            println("Переподключение...")
             Thread.sleep(50)
         }
     }

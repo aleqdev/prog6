@@ -1,14 +1,10 @@
 package org.example
 
-import org.example.AppLogger
+import tools.jackson.databind.ObjectMapper
 import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
 import java.net.SocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.DatagramChannel
-import java.nio.channels.ServerSocketChannel
-import java.nio.channels.SocketChannel
 
 /**
  * Интерфейс для взаимодействия с клиентами
@@ -18,17 +14,6 @@ interface ServerTransport {
     fun send(senderId: String, data: ByteArray)
     fun close()
     fun clientsMap(): ServerClientsMap<*>
-}
-
-object ServerTransportFactory {
-    fun create(type: TransportType, port: Int): ServerTransport = when (type) {
-        TransportType.TCP_STREAM ->
-            ServerTcpStreamTransport(port, ServerClientsMap())
-        TransportType.TCP_NIO ->
-            ServerTcpNioTransport(port, ServerClientsMap())
-        TransportType.UDP ->
-            ServerUdpTransport(port, ServerClientsMap())
-    }
 }
 
 /**
@@ -55,134 +40,6 @@ class ServerClientsMap<SocketT> {
     fun findIdByClient(client: SocketT): ClientId? {
         return allClients().entries.find { it.value == client }?.key
     }
-}
-
-/**
- * Реализует ServerTransport с потоками ввода-вывода
- */
-class ServerTcpStreamTransport(port: Int, val clientsMap: ServerClientsMap<Socket>) : ServerTransport {
-    private val serverSocket = ServerSocket(port).apply { soTimeout = 50 }
-
-    override fun poll(): List<NetworkMessage> {
-        val messages = mutableListOf<NetworkMessage>()
-
-        try {
-            val newSocket = serverSocket.accept()
-            newSocket.soTimeout = 50
-            val id = clientsMap.addClient(newSocket)
-            AppLogger.log("[$id] подключен")
-        } catch (_: java.net.SocketTimeoutException) {}
-
-        val dead = mutableListOf<String>()
-        for ((id, socket) in clientsMap.allClients()) {
-            try {
-                val input = socket.getInputStream()
-                if (input.available() == 0) continue
-
-                val header = ByteArray(4)
-                input.readNBytes(header, 0, 4)
-                val len = ((header[0].toInt() and 0xFF) shl 24) or
-                        ((header[1].toInt() and 0xFF) shl 16) or
-                        ((header[2].toInt() and 0xFF) shl 8) or
-                        (header[3].toInt() and 0xFF)
-                val payload = input.readNBytes(len)
-                messages.add(NetworkMessage(id, payload))
-            } catch (e: Exception) {
-                dead.add(id)
-            }
-        }
-
-        dead.forEach { id ->
-            clientsMap.removeClient(id).also { it.close() }
-            AppLogger.log("[$id] отключен")
-        }
-        return messages
-    }
-
-    override fun send(senderId: String, data: ByteArray) {
-        clientsMap.allClients()[senderId]?.getOutputStream()?.let { out ->
-            out.write(byteArrayOf(
-                (data.size shr 24).toByte(), (data.size shr 16).toByte(),
-                (data.size shr 8).toByte(), data.size.toByte()
-            ))
-            out.write(data)
-            out.flush()
-        }
-    }
-
-    override fun close() {
-        clientsMap.allClients().values.forEach { it.close() }
-        serverSocket.close()
-    }
-
-    override fun clientsMap(): ServerClientsMap<*> = clientsMap
-}
-
-/**
- * Реализует ServerTransport с сетевым каналом
- */
-class ServerTcpNioTransport(port: Int, val clientsMap: ServerClientsMap<SocketChannel>) : ServerTransport {
-    private val serverChannel = ServerSocketChannel.open().apply {
-        bind(InetSocketAddress(port))
-        configureBlocking(false)
-    }
-
-    override fun poll(): List<NetworkMessage> {
-        val messages = mutableListOf<NetworkMessage>()
-
-        serverChannel.accept()?.let { ch ->
-            ch.configureBlocking(false)
-            val id = clientsMap.addClient(ch)
-            AppLogger.log("[$id] подключен")
-        }
-
-        val dead = mutableListOf<String>()
-        for ((id, ch) in clientsMap.allClients()) {
-            try {
-                if (!ch.isOpen) { dead.add(id); continue }
-
-                val header = ByteBuffer.allocate(4)
-                while (header.hasRemaining() && ch.read(header) > 0) {}
-                if (header.hasRemaining()) continue // ещё не пришло полностью
-
-                header.flip()
-                val len = header.int
-
-                val payload = ByteBuffer.allocate(len)
-                while (payload.hasRemaining() && ch.read(payload) > 0) {}
-                if (payload.hasRemaining()) continue // частичный пакет
-
-                payload.flip()
-                val data = ByteArray(payload.remaining()).apply { payload.get(this) }
-                messages.add(NetworkMessage(id, data))
-            } catch (e: Exception) {
-                dead.add(id)
-            }
-        }
-
-        dead.forEach {
-            id -> clientsMap.removeClient(id).also { it.close() }
-            AppLogger.log("[$id] отключен")
-        }
-        return messages
-    }
-
-    override fun send(senderId: String, data: ByteArray) {
-        clientsMap.allClients()[senderId]?.let { ch ->
-            val buf = ByteBuffer.allocate(data.size + 4)
-            buf.putInt(data.size)
-            buf.put(data)
-            buf.flip()
-            while (buf.hasRemaining()) ch.write(buf)
-        }
-    }
-
-    override fun close() {
-        clientsMap.allClients().values.forEach { it.close() }
-        serverChannel.close()
-    }
-
-    override fun clientsMap(): ServerClientsMap<*> = clientsMap
 }
 
 /**
@@ -227,4 +84,32 @@ class ServerUdpTransport(port: Int, val clientsMap: ServerClientsMap<SocketAddre
     }
 
     override fun clientsMap(): ServerClientsMap<*> = clientsMap
+}
+
+/**
+ * Взаимодействует с клиентами на уровне команд
+ */
+class ServerCommandMessenger(
+    private val transport: ServerTransport,
+    private val mapper: ObjectMapper = NetworkMapper.mapper
+) {
+    fun sendResponse(id: ClientId, response: CommandResponse) {
+        val json = mapper.writeValueAsString(response)
+        AppLogger.log("Отправка результата: $json")
+        transport.send(id, json.toByteArray(Charsets.UTF_8))
+    }
+
+    fun tryReceiveCommands(): List<Pair<ClientId, CommandRequest<*>>> {
+        val rawMessages = transport.poll()
+        val result: MutableList<Pair<ClientId, CommandRequest<*>>> = mutableListOf()
+
+        rawMessages.forEach { message ->
+            val json = String(message.data, Charsets.UTF_8)
+            AppLogger.log("Получена команда: $json")
+            val cmd = mapper.readValue(json, CommandRequest::class.java)
+            result.add(message.senderId to cmd)
+        }
+
+        return result
+    }
 }

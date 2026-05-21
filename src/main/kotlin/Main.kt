@@ -1,12 +1,5 @@
 package org.example
 
-import java.io.File
-import java.io.FileInputStream
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
-import java.time.ZonedDateTime
-import java.util.Scanner
-
 /**
  * Точка входа в приложение.
  */

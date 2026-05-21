@@ -10,13 +10,17 @@ import java.time.ZonedDateTime
 data class Ticket(
     @FromTerminalIgnore
     val id: Long = 0,
+    @ValidateWith(NotNull::class)
     val name: String? = null,
+    @ValidateWith(NotNull::class)
     val coordinates: Coordinates? = Coordinates(),
     @FromTerminalIgnore
     val creationDate: ZonedDateTime? = null,
+    @ValidateWith(IsPositive::class)
     val price: Long = 0,
     val refundable: Boolean = false,
     val type: TicketType? = null,
+    @ValidateWith(NotNull::class)
     val event: Event? = Event()
 ) : Entity, Comparable<Ticket> {
 
@@ -31,7 +35,9 @@ data class Ticket(
  * Координаты места проведения мероприятия.
  */
 data class Coordinates(
+    @ValidateWith(NotNull::class)
     val x: Float? = null,
+    @ValidateWith(CoordinateYMin::class)
     val y: Double? = null
 ) : Entity, Comparable<Coordinates> {
 
@@ -50,8 +56,11 @@ data class Coordinates(
 data class Event(
     @FromTerminalIgnore
     val id: Long = 0,
+    @ValidateWith(NotNull::class)
     val name: String? = null,
+    @ValidateWith(NotNull::class)
     val date: ZonedDateTime? = null,
+    @ValidateWith(NotNull::class)
     val eventType: EventType? = null
 ) : Entity, Comparable<Event> {
 
@@ -73,3 +82,28 @@ enum class TicketType : Comparable<TicketType> {
 enum class EventType {
     CONCERT, BASEBALL, OPERA
 }
+
+/**
+ * Валидатор
+ */
+class IsPositive : ValidatorRule<Long> {
+    override fun isValid(value: Long): Boolean = value > 0
+}
+
+/**
+ * Валидатор
+ */
+class NotNull : ValidatorRule<Any?> {
+    override fun isValid(value: Any?): Boolean = value != null
+}
+
+/**
+ * Валидатор
+ */
+class CoordinateYMin : ValidatorRule<Double?> {
+    override fun isValid(value: Double?): Boolean {
+        if (value == null) return false
+        return value > -231.0
+    }
+}
+
