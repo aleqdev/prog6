@@ -24,8 +24,9 @@ fun startServer(dbFilename: String) {
 
                 ticket.coordinates?.let { coords ->
                     if (coords.x == null) errors.fail("coordinates.x не может быть null")
-                    if (coords.y == null) errors.fail("coordinates.y не может быть null")
-                    if (coords.y != null && coords.y <= -231.0) {
+                    val y = coords.y
+                    if (y == null) errors.fail("coordinates.y не может быть null")
+                    if (y != null && y <= -231.0) {
                         errors.fail("coordinates.y должен быть > -231")
                     }
                 }

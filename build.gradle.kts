@@ -1,39 +1,15 @@
 plugins {
-    kotlin("jvm") version "2.2.20"
-    kotlin("plugin.serialization") version "2.2.20"
+    kotlin("jvm") version "2.2.20" apply false
+    kotlin("plugin.serialization") version "2.2.20" apply false
 }
 
-group = "org.example"
-version = "1.0-SNAPSHOT"
-
-repositories {
-    mavenCentral()
+allprojects {
+    group = "org.example"
+    version = "1.0-SNAPSHOT"
 }
 
-dependencies {
-    implementation("tools.jackson.dataformat:jackson-dataformat-xml:3.1.2")
-    implementation("tools.jackson.module:jackson-module-kotlin:3.1.2")
-    implementation("ch.qos.logback:logback-classic:1.5.6")
-    implementation("org.apache.logging.log4j:log4j-api:2.26.0")
-    implementation("org.apache.logging.log4j:log4j-core:2.26.0")
-    implementation(kotlin("reflect"))
-    testImplementation(kotlin("test"))
-}
-
-tasks.test {
-    useJUnitPlatform()
-}
-kotlin {
-    jvmToolchain(17)
-}
-tasks.jar {
-    manifest {
-        attributes["Main-Class"] = "org.example.MainKt"
+subprojects {
+    repositories {
+        mavenCentral()
     }
-    from({
-        configurations.runtimeClasspath.get().map {
-            if (it.isDirectory) it else zipTree(it)
-        }
-    })
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
 }

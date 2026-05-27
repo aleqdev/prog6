@@ -75,7 +75,6 @@ class HelpCommand @JsonCreator constructor() : LocalCommand<Unit> {
     override fun prepare(context: CommandPrepareContext) { return }
     override fun processLocal(context: LocalCommandContext, data: Unit) {
         context.output().write("Доступные команды:\n")
-        println("Доступные команды:")
         context.registry().commands().forEach {
             context.output().write("  ${it.name()} - ${it.description()}\n")
         }
@@ -151,7 +150,7 @@ class UpdateIdCommand @JsonCreator constructor() : ServerCommand<Ticket> {
     }
     override fun processServer(context: ServerCommandContext, data: Ticket) {
         if (context.db().query(Ticket::class)?.none { it.id == data.id } == true) {
-            context.output().write("Нет элемента с таким id")
+            context.output().write("Нет элемента с таким id\n")
         } else {
             context.db().update({ it.id == data.id }, { data }, Ticket::class)
         }
@@ -173,7 +172,7 @@ class RemoveByIdCommand @JsonCreator constructor() : ServerCommand<Long> {
     }
     override fun processServer(context: ServerCommandContext, data: Long) {
         if (context.db().query(Ticket::class)?.none { it.id == data } == true) {
-            context.output().write("Нет элемента с таким id")
+            context.output().write("Нет элемента с таким id\n")
         } else {
             context.db().remove({ it.id == data }, Ticket::class)
         }
@@ -222,7 +221,7 @@ class ExecuteScriptCommand @JsonCreator constructor() : ServerCommand<String> {
         }
         val fileName = context.args()[0]
         if (context.executionHistory().contains(fileName)) {
-            context.output().write("Ошибка: рекурсия")
+            context.output().write("Ошибка: рекурсия\n")
             return ""
         }
         context.executionHistory().add(fileName)
@@ -491,6 +490,7 @@ fun processCommands(
             if (history.size > 8) history.removeAt(0)
         } else {
             output.write("Неизвестная команда: $name. Введите 'help'\n")
+            output.flush()
         }
     }
 }

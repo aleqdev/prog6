@@ -1,22 +1,11 @@
 package org.example
 
 import com.fasterxml.jackson.annotation.JsonTypeInfo
-import tools.jackson.core.type.TypeReference
 import tools.jackson.databind.DefaultTyping
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.json.JsonMapper
 import tools.jackson.databind.jsontype.BasicPolymorphicTypeValidator
 import tools.jackson.module.kotlin.KotlinModule
-import java.io.InputStream
-import java.io.OutputStream
-import java.lang.AutoCloseable
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
-import java.nio.ByteBuffer
-import java.nio.channels.DatagramChannel
-import java.nio.channels.ServerSocketChannel
-import java.nio.channels.SocketChannel
 
 /**
  * Сереализует команды и их <DT>
@@ -61,3 +50,30 @@ data class CommandResponse (
 data class NetworkMessage(val senderId: ClientId, val data: ByteArray)
 
 typealias ClientId = String
+
+/**
+ * Хранилище подключённых клиентов на стороне сервера.
+ * Используется в ServerCommandContext, поэтому живёт в shared.
+ */
+class ServerClientsMap<SocketT> {
+    private var nextId = 0
+    private var clients = mutableMapOf<ClientId, SocketT>()
+
+    fun addClient(socket: SocketT): ClientId {
+        val id = "client_${nextId++}"
+        clients[id] = socket
+        return id
+    }
+
+    fun removeClient(id: ClientId): SocketT {
+        val client = clients[id]!!
+        clients = clients.filterNot { it.key == id }.toMutableMap()
+        return client
+    }
+
+    fun allClients(): Map<ClientId, SocketT> = clients
+
+    fun findIdByClient(client: SocketT): ClientId? {
+        return allClients().entries.find { it.value == client }?.key
+    }
+}

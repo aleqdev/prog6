@@ -106,4 +106,3 @@ class CoordinateYMin : ValidatorRule<Double?> {
         return value > -231.0
     }
 }
-
