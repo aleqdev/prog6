@@ -1,19 +1,26 @@
 package org.example
 
-import java.io.*
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.nio.charset.StandardCharsets
 import java.time.ZonedDateTime
-import java.util.*
+import java.util.Scanner
+
+private const val UDP_PORT = 8323
 
 fun startServer(dbFilename: String) {
+    AppLogger.setLogger("Log4J2")
+
     val db = ArrayDequeueDatabase()
 
-    // Создаём коллекцию
     db.createCollection<Ticket>(
         rules = listOf(
             DatabaseEntityRule { ticket, database, errors ->
                 if (ticket.id <= 0) errors.fail("ID должен быть > 0")
-                if (database.query<Ticket>()?.any { it.id == ticket.id } == true) {
+                if (database.query<Ticket>()?.stream()?.anyMatch { it.id == ticket.id } == true) {
                     errors.fail("ID должен быть уникальным")
                 }
                 if (ticket.name.isNullOrEmpty()) errors.fail("name не может быть пустым")
@@ -33,7 +40,7 @@ fun startServer(dbFilename: String) {
 
                 ticket.event?.let { event ->
                     if (event.id <= 0) errors.fail("event.id должен быть > 0")
-                    if (database.query<Ticket>()?.any { it.event?.id == event.id } == true) {
+                    if (database.query<Ticket>()?.stream()?.anyMatch { it.event?.id == event.id } == true) {
                         errors.fail("event.id должен быть уникальным")
                     }
                     if (event.name.isNullOrEmpty()) errors.fail("event.name не может быть пустым")
@@ -45,8 +52,11 @@ fun startServer(dbFilename: String) {
         prepopulate = listOf(
             DatabaseEntityPrepopulate { ticket, database ->
                 val tickets = database.query<Ticket>() ?: emptyList()
-                val maxTicketId = tickets.maxOfOrNull { it.id } ?: 0
-                val maxEventId = tickets.mapNotNull { it.event?.id }.maxOrNull() ?: 0
+                val maxTicketId = tickets.stream().mapToLong { it.id }.max().orElse(0L)
+                val maxEventId = tickets.stream()
+                    .mapToLong { it.event?.id ?: 0L }
+                    .max()
+                    .orElse(0L)
 
                 ticket.copy(
                     id = maxTicketId + 1,
@@ -61,97 +71,199 @@ fun startServer(dbFilename: String) {
         val file = File(dbFilename)
         if (file.exists() && file.canRead()) {
             val reader = InputStreamReader(FileInputStream(file), "UTF-8")
-            deserializeTickets(reader).forEach { db.add(it) }
+            deserializeTickets(reader).forEach { db.addNonPopulated(it) }
             reader.close()
-            println("Загружено ${db.query<Ticket>()?.size ?: 0} билетов из $dbFilename")
+            AppLogger.log("Загружено ${db.query<Ticket>()?.size ?: 0} билетов из $dbFilename")
         }
     } catch (e: Exception) {
-        println("Не удалось загрузить данные: ${e.message}")
+        AppLogger.log("Не удалось загрузить данные: ${e.message}")
     }
 
-    val commands = allCommands()
+    val registry = buildServerCommandRegistry()
     val writer = OutputStreamWriter(System.`out`, "UTF-8")
-    val history: MutableList<String> = mutableListOf()
 
-    AppLogger.setLogger("Log4J2")
-    // AppLogger.setLogger("Logback")
-    // AppLogger.setLogger("Log4J2")
+    Runtime.getRuntime().addShutdownHook(Thread {
+        AppLogger.log("Завершение работы, автосохранение в $dbFilename")
+        runCatching { saveCollection(db, dbFilename) }
+            .onFailure { AppLogger.log("Ошибка автосохранения: ${it.message}") }
+    })
 
-    serverMainLoop(
-        db,
-        commands,
-        writer,
-        dbFilename,
-        history
-    )
+    serverMainLoop(db, registry, writer, dbFilename)
 }
 
 fun serverMainLoop(
-    db: Database<*>,
-    commands: List<Command<*>>,
+    db: ArrayDequeueDatabase,
+    registry: ServerCommandRegistry,
     writer: OutputStreamWriter,
     dbFilename: String,
-    history: MutableList<String> = mutableListOf()
 ) {
-    val reader = InputStreamReader(System.`in`, "UTF-8")
-    val readerScanner = Scanner(reader)
-
-    val transport = ServerUdpTransport(8323, ServerClientsMap())
+    val transport = ServerUdpTransport(UDP_PORT, ServerClientsMap())
     val messenger = ServerCommandMessenger(transport)
 
-    processCommandsPrompted(
-        object : AsyncCommandScanner {
-            override fun hasNextLine(): Boolean = readerScanner.hasNextLine()
-            override fun nextLine(): String = readerScanner.nextLine()
-            override fun spinUntilInputAvailable() {
-                while (System.`in`.available() == 0) {
-                    messenger.tryReceiveCommands().forEach { (senderId, cmd) ->
-                        val (command, rawData) = cmd
-                        val outputBuffer = ByteArrayOutputStream()
-                        val outputWriter = OutputStreamWriter(outputBuffer)
-                        executeReceivedCommand(
-                            command,
-                            rawData,
-                            object : ServerCommandContext {
-                                override fun registry(): CommandRegistry = object : CommandRegistry {
-                                    override fun commands(): List<Command<*>> = commands
-                                }
-                                override fun output(): OutputStreamWriter = outputWriter
-                                override fun shouldExit(): ShouldExitRef = ShouldExitRef(false)
-                                override fun history(): MutableList<String> = history
-                                override fun db(): Database<*> = db
-                                override fun dbFilename(): String = dbFilename
-                                override fun senderId(): ClientId = senderId
-                                override fun serverClientsMap(): ServerClientsMap<*> = transport.clientsMap()
-                                override fun executionHistory(): MutableList<String> = mutableListOf()
-                            }
-                        )
-                        outputWriter.flush()
-                        val result = outputBuffer.toString(StandardCharsets.UTF_8)
-                        messenger.sendResponse(senderId, CommandResponse(result))
-                    }
-                    Thread.sleep(50L)
+    val stdinReader = InputStreamReader(System.`in`, "UTF-8")
+    val stdinScanner = Scanner(stdinReader)
+
+    writer.write("> ")
+
+    var running = true
+    while (running) {
+        messenger.tryReceiveCommands().forEach { incoming ->
+            when (incoming) {
+                is IncomingMessage.Malformed -> {
+                    AppLogger.log("[${incoming.senderId}] невалидное сообщение: ${incoming.reason}")
+                    messenger.sendResponse(
+                        incoming.senderId,
+                        CommandResponse("Ошибка: невалидное сообщение или неизвестная команда\n")
+                    )
                 }
+                is IncomingMessage.Parsed -> handleNetworkCommand(
+                    incoming.senderId,
+                    incoming.command,
+                    registry,
+                    db,
+                    dbFilename,
+                    transport,
+                    messenger
+                )
             }
-            override fun inner(): Scanner = readerScanner
-        },
-        writer,
-        ShouldExitRef(false),
-        commands,
-        history,
-        db,
-        dbFilename,
-        mutableListOf(),
-        transport.clientsMap()
-    )
+        }
+
+        if (System.`in`.available() > 0 && stdinScanner.hasNextLine()) {
+            val line = stdinScanner.nextLine().trim()
+            if (line.isNotEmpty()) {
+                handleServerLine(line, registry, db, dbFilename, writer, stdinScanner) { running = false }
+                writer.write("> ")
+                writer.flush()
+            }
+        }
+
+        Thread.sleep(50L)
+    }
+
+    transport.close()
 }
 
-fun executeReceivedCommand(
-    command: Command<*>,
-    data: Any?,
-    context: ServerCommandContext
+private fun handleServerLine(
+    line: String,
+    registry: ServerCommandRegistry,
+    db: ArrayDequeueDatabase,
+    dbFilename: String,
+    writer: OutputStreamWriter,
+    scanner: Scanner,
+    requestShutdown: () -> Unit,
 ) {
-    // UNCHECKED_CAST = мы не могли сериализовать некорректный <CD>, LocalCommand не сериализуется
-    @Suppress("UNCHECKED_CAST")
-    (command as ServerCommand<Any?>).processServer(context, data)
+    val parts = line.split(Regex("\\s+"))
+    val name = parts.first()
+    val args = parts.drop(1)
+
+    when (name) {
+        "save" -> {
+            runCatching { saveCollection(db, dbFilename) }
+                .onSuccess { writer.write("Данные сохранены\n") }
+                .onFailure { writer.write("Ошибка сохранения: ${it.message}\n") }
+            writer.flush()
+        }
+        "exit" -> {
+            writer.write("Завершение работы...\n")
+            writer.flush()
+            requestShutdown()
+        }
+        "help" -> {
+            writer.write("Команды сервера:\n")
+            writer.write("  save - сохранить коллекцию в файл\n")
+            writer.write("  exit - завершить работу сервера\n")
+            writer.write("  help - вывести этот список\n")
+            registry.adminHandlers().forEach {
+                writer.write("  ${it.name()} - ${it.description()}\n")
+            }
+            writer.flush()
+        }
+        else -> {
+            val handler = registry.handlerByName(name)
+            if (handler == null || !handler.adminCallable()) {
+                writer.write("Неизвестная серверная команда: '$name'. Введите 'help'.\n")
+                writer.flush()
+                return
+            }
+            val command = handler.prepareFromConsole(args, scanner, writer) ?: run {
+                writer.flush(); return
+            }
+            val ctx = serverContext(db, dbFilename, writer)
+            val errors = handler.validate(command, ctx)
+            if (errors.isNotEmpty()) {
+                writer.write("Ошибки валидации:\n")
+                errors.forEach { writer.write("  $it\n") }
+            } else {
+                handler.process(command, ctx)
+            }
+            writer.flush()
+        }
+    }
+}
+
+private fun serverContext(
+    db: ArrayDequeueDatabase,
+    dbFilename: String,
+    writer: OutputStreamWriter,
+): ServerCommandContext = object : ServerCommandContext {
+    override fun db() = db
+    override fun output() = writer
+    override fun clientsMap(): ServerClientsMap<*> = ServerClientsMap<Any>()
+    override fun senderId(): ClientId? = null
+    override fun dbFilename() = dbFilename
+}
+
+/**
+ * исполнение одной сетевой команды.
+ */
+fun handleNetworkCommand(
+    senderId: ClientId,
+    command: Command,
+    registry: ServerCommandRegistry,
+    db: ArrayDequeueDatabase,
+    dbFilename: String,
+    transport: ServerTransport,
+    messenger: ServerCommandMessenger,
+) {
+    val outputBuffer = ByteArrayOutputStream()
+    val outputWriter = OutputStreamWriter(outputBuffer, StandardCharsets.UTF_8)
+
+    val ctx = object : ServerCommandContext {
+        override fun db() = db
+        override fun output() = outputWriter
+        override fun clientsMap() = transport.clientsMap()
+        override fun senderId() = senderId
+        override fun dbFilename() = dbFilename
+    }
+
+    val handler = registry.handlerFor(command)
+    if (handler == null) {
+        outputWriter.write("Команда не разрешена: ${command.name()}\n")
+    } else {
+        val errors = handler.validate(command, ctx)
+        if (errors.isNotEmpty()) {
+            outputWriter.write("Ошибки валидации:\n")
+            errors.forEach { outputWriter.write("  $it\n") }
+        } else {
+            handler.process(command, ctx)
+        }
+    }
+
+    outputWriter.flush()
+    val result = outputBuffer.toString(StandardCharsets.UTF_8)
+
+    // DisconnectCommand — служебное сообщение, отвечать клиенту не нужно
+    if (command !is DisconnectCommand) {
+        messenger.sendResponse(senderId, CommandResponse(result))
+    }
+}
+
+/**
+ * Сохранение коллекции в файл
+ */
+fun saveCollection(db: ArrayDequeueDatabase, dbFilename: String) {
+    val tickets = db.query<Ticket>() ?: emptyList()
+    File(dbFilename).writer().use { writer ->
+        serializeTickets(tickets, writer)
+    }
 }

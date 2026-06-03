@@ -22,7 +22,7 @@ data class Ticket(
     val type: TicketType? = null,
     @ValidateWith(NotNull::class)
     val event: Event? = Event()
-) : Entity, Comparable<Ticket> {
+) : Comparable<Ticket> {
 
     override fun compareTo(other: Ticket): Int = this.id.compareTo(other.id)
 
@@ -39,7 +39,7 @@ data class Coordinates(
     val x: Float? = null,
     @ValidateWith(CoordinateYMin::class)
     val y: Double? = null
-) : Entity, Comparable<Coordinates> {
+) : Comparable<Coordinates> {
 
     override fun compareTo(other: Coordinates): Int {
         val thisSum = (this.x?.toDouble() ?: 0.0) + (this.y ?: 0.0)
@@ -62,7 +62,7 @@ data class Event(
     val date: ZonedDateTime? = null,
     @ValidateWith(NotNull::class)
     val eventType: EventType? = null
-) : Entity, Comparable<Event> {
+) : Comparable<Event> {
 
     override fun compareTo(other: Event): Int = this.id.compareTo(other.id)
 

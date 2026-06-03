@@ -6,137 +6,129 @@ import java.net.SocketTimeoutException
 import java.util.Scanner
 
 fun startClient() {
-    val commands = allClientCommands()
     val writer = OutputStreamWriter(System.`out`, "UTF-8")
     val history: MutableList<String> = mutableListOf()
-
-    clientMainLoop(
-        commands,
-        writer,
-        history
-    )
-}
-
-fun clientMainLoop(
-    commands: List<Command<*>>,
-    output: OutputStreamWriter,
-    history: MutableList<String> = mutableListOf()
-) {
     val shouldExit = ShouldExitRef(false)
 
     val reader = InputStreamReader(System.`in`, "UTF-8")
-    val readerScanner = Scanner(reader)
-    val asyncScanner = object : AsyncCommandScanner {
-        override fun hasNextLine(): Boolean = readerScanner.hasNextLine()
-        override fun nextLine(): String = readerScanner.nextLine()
-        override fun spinUntilInputAvailable() {}
-        override fun inner(): Scanner = readerScanner
-    }
+    val stdinScanner = Scanner(reader)
 
-    while (!shouldExit.value) {
-        ClientUdpTransport("localhost", 8323).use { transport ->
-            ClientCommandMessenger(transport).use { messenger ->
-                processClientMainLoop(
-                    shouldExit,
-                    output,
-                    asyncScanner,
-                    commands,
-                    history,
-                    messenger
-                )
-            }
-        }
-    }
-}
-
-fun processClientMainLoop(
-    shouldExit: ShouldExitRef,
-    output: OutputStreamWriter,
-    asyncScanner: AsyncCommandScanner,
-    commands: List<Command<*>>,
-    history: MutableList<String>,
-    messenger: ClientCommandMessenger
-) {
     while (!shouldExit.value) {
         try {
-            output.flush()
-            print("> ")
-
-            if (!asyncScanner.hasNextLine()) {
-                break
-            }
-
-            val line = asyncScanner.nextLine().trim()
-            if (line.isEmpty()) continue
-
-            val parts = line.split(Regex("\\s+"))
-            val name = parts.first()
-            val args = parts.drop(1)
-
-            val prepareCtx = object : CommandPrepareContext {
-                override fun registry(): CommandRegistry = object : CommandRegistry {
-                    override fun commands(): List<Command<*>> = commands
+            ClientUdpTransport("localhost", 8323).use { transport ->
+                ClientCommandMessenger(transport).use { messenger ->
+                    runClientLoop(stdinScanner, writer, history, shouldExit, messenger)
                 }
-
-                override fun scanner(): AsyncCommandScanner = asyncScanner
-                override fun output(): OutputStreamWriter = output
-                override fun args(): List<String> = args
-                override fun executionHistory(): MutableList<String> = mutableListOf()
-            }
-
-            val ctx = object : LocalCommandContext {
-                override fun registry(): CommandRegistry = object : CommandRegistry {
-                    override fun commands(): List<Command<*>> = commands
-                }
-
-                override fun output(): OutputStreamWriter = output
-                override fun shouldExit(): ShouldExitRef = shouldExit
-                override fun history(): MutableList<String> = history
-            }
-
-            val command = commands.find { it.name() == name }
-            if (command != null) {
-                when (command) {
-                    is LocalCommand<*> -> {
-                        @Suppress("UNCHECKED_CAST")
-                        val typedCommand = command as LocalCommand<Any?>
-                        typedCommand.prepare(prepareCtx)?.let { data ->
-                            typedCommand.processLocal(ctx, data)
-                        }
-                    }
-
-                    is ServerCommand -> {
-                        @Suppress("UNCHECKED_CAST")
-                        val typedCommand = command as ServerCommand<Any?>
-                        typedCommand.prepare(prepareCtx)?.let { data ->
-                            messenger.sendCommand(typedCommand, data)
-
-                            var gotResponse = false
-                            repeat(60) {
-                                if (!gotResponse) {
-                                    messenger.tryReceiveResponse()?.let { resp ->
-                                        print(resp.output)
-                                        gotResponse = true
-                                        return@repeat
-                                    }
-                                    Thread.sleep(50)
-                                }
-                            }
-
-                            if (!gotResponse) throw SocketTimeoutException("таймаут сервера")
-                        }
-                    }
-
-                    else -> throw IllegalArgumentException(command::class.simpleName)
-                }
-                history.add(name)
-                if (history.size > 8) history.removeAt(0)
-            } else {
-                output.write("Неизвестная команда: $name. Введите 'help'\n")
             }
         } catch (e: Exception) {
-            println("Ошибка: ${e.message}")
-            Thread.sleep(50)
+            writer.write("Ошибка соединения: ${e.message}\n")
+            writer.flush()
+            Thread.sleep(500L)
         }
     }
 }
+
+private fun runClientLoop(
+    stdinScanner: Scanner,
+    output: OutputStreamWriter,
+    history: MutableList<String>,
+    shouldExit: ShouldExitRef,
+    messenger: ClientCommandMessenger,
+) {
+    lateinit var locals: List<LocalClientCommand>
+    val networks: List<NetworkClientCommand> = buildNetworkCommands()
+
+    val runLine: (String, ClientCommandContext) -> Unit = { line, ctx ->
+        dispatch(line, ctx, messenger, output, history)
+    }
+    locals = buildLocalCommands(runLine)
+
+    while (!shouldExit.value) {
+        output.flush()
+        print("> ")
+        if (!stdinScanner.hasNextLine()) break
+
+        val line = stdinScanner.nextLine().trim()
+        if (line.isEmpty()) continue
+
+        val ctx = makeContext(stdinScanner, output, history, shouldExit, locals, networks)
+        dispatch(line, ctx, messenger, output, history)
+    }
+}
+
+private fun dispatch(
+    line: String,
+    context: ClientCommandContext,
+    messenger: ClientCommandMessenger,
+    output: OutputStreamWriter,
+    history: MutableList<String>,
+) {
+    val parts = line.split(Regex("\\s+"))
+    val name = parts.first()
+    val args = parts.drop(1)
+    val withArgs = withArgs(context, args)
+
+    val local = context.localCommands().firstOrNull { it.name() == name }
+    if (local != null) {
+        local.execute(withArgs)
+        history.add(name)
+        if (history.size > 8) history.removeAt(0)
+        return
+    }
+
+    val network = context.networkCommands().firstOrNull { it.name() == name }
+    if (network != null) {
+        val command = network.prepare(withArgs) ?: return
+        sendCommand(command, messenger, output)
+        history.add(name)
+        if (history.size > 8) history.removeAt(0)
+        return
+    }
+
+    output.write("Неизвестная команда: $name. Введите 'help'\n")
+}
+
+private fun sendCommand(
+    command: Command,
+    messenger: ClientCommandMessenger,
+    output: OutputStreamWriter,
+) {
+    messenger.sendCommand(command)
+    var got = false
+    repeat(60) {
+        if (got) return@repeat
+        messenger.tryReceiveResponse()?.let { resp ->
+            output.write(resp.output)
+            got = true
+            return@repeat
+        }
+        Thread.sleep(50L)
+    }
+    if (!got) throw SocketTimeoutException("таймаут сервера")
+}
+
+private fun makeContext(
+    scanner: Scanner,
+    output: OutputStreamWriter,
+    history: MutableList<String>,
+    shouldExit: ShouldExitRef,
+    locals: List<LocalClientCommand>,
+    networks: List<NetworkClientCommand>,
+): ClientCommandContext {
+    val execHistory: MutableList<String> = mutableListOf()
+    return object : ClientCommandContext {
+        override fun output() = output
+        override fun scanner() = scanner
+        override fun args(): List<String> = emptyList()
+        override fun history() = history
+        override fun shouldExit() = shouldExit
+        override fun executionHistory() = execHistory
+        override fun localCommands() = locals
+        override fun networkCommands() = networks
+    }
+}
+
+private fun withArgs(base: ClientCommandContext, newArgs: List<String>): ClientCommandContext =
+    object : ClientCommandContext by base {
+        override fun args(): List<String> = newArgs
+    }

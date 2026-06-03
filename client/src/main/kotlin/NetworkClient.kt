@@ -10,14 +10,11 @@ import java.net.SocketTimeoutException
 /**
  * Интерфейс для взаимодействия с сервером
  */
-interface ClientTransport: AutoCloseable {
+interface ClientTransport : AutoCloseable {
     fun send(bytes: ByteArray)
     fun tryReceive(): ByteArray?
 }
 
-/**
- * Реализует ClientTransport с датаграммами
- */
 class ClientUdpTransport(host: String, port: Int) : ClientTransport {
     private val socket = DatagramSocket()
     private val serverAddr = InetSocketAddress(host, port)
@@ -55,25 +52,19 @@ class ClientUdpTransport(host: String, port: Int) : ClientTransport {
 class ClientCommandMessenger(
     private val transport: ClientTransport,
     private val mapper: ObjectMapper = NetworkMapper.mapper
-): java.lang.AutoCloseable {
-    fun sendCommand(command: Command<*>, data: Any?) {
-        val request = CommandRequest(command, data)
-        val json = mapper.writeValueAsString(request)
+) : AutoCloseable {
+    fun sendCommand(command: Command) {
+        val json = mapper.writeValueAsString(command)
         transport.send(json.toByteArray(Charsets.UTF_8))
     }
 
     fun tryReceiveResponse(): CommandResponse? {
         val recv = transport.tryReceive() ?: return null
-
         val json = String(recv, Charsets.UTF_8)
-
         return mapper.readValue(json, CommandResponse::class.java)
     }
 
     override fun close() {
-        sendCommand(
-            DisconnectClientCommand(),
-            Unit,
-        )
+        sendCommand(DisconnectCommand())
     }
 }

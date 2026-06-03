@@ -6,7 +6,7 @@
       <x>13.0</x>
       <y>13.0</y>
     </coordinates>
-    <creationDate>2026-05-19T18:55:54.7726964+03:00</creationDate>
+    <creationDate>2026-05-27T15:39:10.0028433+03:00</creationDate>
     <price>123</price>
     <refundable>true</refundable>
     <type>VIP</type>
@@ -24,7 +24,7 @@
       <x>123.123</x>
       <y>321.321</y>
     </coordinates>
-    <creationDate>2026-05-19T18:55:54.7742262+03:00</creationDate>
+    <creationDate>2026-05-27T15:39:10.0108481+03:00</creationDate>
     <price>9999</price>
     <refundable>false</refundable>
     <type>USUAL</type>
@@ -42,7 +42,7 @@
       <x>123.123</x>
       <y>3.2323232E7</y>
     </coordinates>
-    <creationDate>2026-05-19T18:55:54.7742262+03:00</creationDate>
+    <creationDate>2026-05-27T15:39:10.0108481+03:00</creationDate>
     <price>123</price>
     <refundable>true</refundable>
     <type>VIP</type>
@@ -60,7 +60,7 @@
       <x>213.123</x>
       <y>213.2</y>
     </coordinates>
-    <creationDate>2026-05-19T18:56:28.7794442+03:00</creationDate>
+    <creationDate>2026-05-27T15:39:10.0108481+03:00</creationDate>
     <price>123</price>
     <refundable>true</refundable>
     <type>VIP</type>

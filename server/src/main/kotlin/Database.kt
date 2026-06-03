@@ -4,15 +4,11 @@ import java.util.function.Predicate
 import kotlin.reflect.KClass
 
 /**
- * Интерфейс сущности БД
- */
-interface Entity
-
-/**
  * Интерфейс коллекции сущностей
  */
-interface EntityCollection<E : Entity, D : Database<D>> {
+interface EntityCollection<E : Any, D : Database<D>> {
     fun add(entity: E)
+    fun addNonPopulated(entity: E)
     fun remove(predicate: Predicate<E>)
     fun update(predicate: Predicate<E>, updateFn: (E) -> E)
     fun rules(): List<DatabaseEntityRule<E, D>>
@@ -24,16 +20,17 @@ interface EntityCollection<E : Entity, D : Database<D>> {
  * Интерфейс базы данных
  */
 interface Database<D : Database<D>> {
-    fun <E : Entity> createCollection(
+    fun <E : Any> createCollection(
         kls: KClass<E>,
         rules: List<DatabaseEntityRule<E, D>>,
         prepopulate: List<DatabaseEntityPrepopulate<E, D>>
     )
 
-    fun <E : Entity> query(kls: KClass<E>): List<E>?
-    fun <E : Entity> add(entity: E, kls: KClass<E>)
-    fun <E : Entity> remove(predicate: Predicate<E>, kls: KClass<E>)
-    fun <E : Entity> update(predicate: Predicate<E>, updateFn: (E) -> E, kls: KClass<E>)
+    fun <E : Any> query(kls: KClass<E>): List<E>?
+    fun <E : Any> add(entity: E, kls: KClass<E>)
+    fun <E : Any> addNonPopulated(entity: E, kls: KClass<E>)
+    fun <E : Any> remove(predicate: Predicate<E>, kls: KClass<E>)
+    fun <E : Any> update(predicate: Predicate<E>, updateFn: (E) -> E, kls: KClass<E>)
 }
 
 /**
@@ -77,13 +74,13 @@ class ListDatabaseEntityRuleErrorCollector : DatabaseEntityRuleErrorCollector {
 class ArrayDequeueDatabase : Database<ArrayDequeueDatabase> {
     private val collections: MutableMap<KClass<*>, EntityCollection<*, ArrayDequeueDatabase>> = mutableMapOf()
 
-    override fun <E : Entity> query(kls: KClass<E>): List<E>? {
+    override fun <E : Any> query(kls: KClass<E>): List<E>? {
         @Suppress("UNCHECKED_CAST")
         val collection = collections[kls] as? EntityCollection<E, ArrayDequeueDatabase>
         return collection?.asList()
     }
 
-    override fun <E : Entity> createCollection(
+    override fun <E : Any> createCollection(
         kls: KClass<E>,
         rules: List<DatabaseEntityRule<E, ArrayDequeueDatabase>>,
         prepopulate: List<DatabaseEntityPrepopulate<E, ArrayDequeueDatabase>>
@@ -92,14 +89,14 @@ class ArrayDequeueDatabase : Database<ArrayDequeueDatabase> {
             private var items: ArrayDeque<E> = ArrayDeque()
 
             override fun add(entity: E) {
-                var entity = entity
-
-                // Авто поля
+                var prepopulated = entity
                 for (pre in prepopulate()) {
-                    entity = pre.prepopulate(entity, this@ArrayDequeueDatabase)
+                    prepopulated = pre.prepopulate(prepopulated, this@ArrayDequeueDatabase)
                 }
+                addNonPopulated(prepopulated)
+            }
 
-                // Валидация
+            override fun addNonPopulated(entity: E) {
                 val errors = ListDatabaseEntityRuleErrorCollector()
                 for (rule in rules()) {
                     rule.check(entity, this@ArrayDequeueDatabase, errors)
@@ -129,19 +126,25 @@ class ArrayDequeueDatabase : Database<ArrayDequeueDatabase> {
         }
     }
 
-    override fun <E : Entity> add(entity: E, kls: KClass<E>) {
+    override fun <E : Any> add(entity: E, kls: KClass<E>) {
         @Suppress("UNCHECKED_CAST")
         val collection = collections[kls] as? EntityCollection<E, ArrayDequeueDatabase>
         collection?.add(entity)
     }
 
-    override fun <E : Entity> remove(predicate: Predicate<E>, kls: KClass<E>) {
+    override fun <E : Any> addNonPopulated(entity: E, kls: KClass<E>) {
+        @Suppress("UNCHECKED_CAST")
+        val collection = collections[kls] as? EntityCollection<E, ArrayDequeueDatabase>
+        collection?.addNonPopulated(entity)
+    }
+
+    override fun <E : Any> remove(predicate: Predicate<E>, kls: KClass<E>) {
         @Suppress("UNCHECKED_CAST")
         val collection = collections[kls] as? EntityCollection<E, ArrayDequeueDatabase>
         collection?.remove(predicate)
     }
 
-    override fun <E : Entity> update(
+    override fun <E : Any> update(
         predicate: Predicate<E>,
         updateFn: (E) -> E,
         kls: KClass<E>
@@ -152,14 +155,15 @@ class ArrayDequeueDatabase : Database<ArrayDequeueDatabase> {
     }
 
     // Inline-обёртки для удобства
-    inline fun <reified E : Entity> createCollection(
+    inline fun <reified E : Any> createCollection(
         rules: List<DatabaseEntityRule<E, ArrayDequeueDatabase>>,
         prepopulate: List<DatabaseEntityPrepopulate<E, ArrayDequeueDatabase>> = listOf()
     ) = createCollection(E::class, rules, prepopulate)
 
-    inline fun <reified E : Entity> query(): List<E>? = query(E::class)
-    inline fun <reified E : Entity> add(entity: E) = add(entity, E::class)
-    inline fun <reified E : Entity> remove(predicate: Predicate<E>) = remove(predicate, E::class)
-    inline fun <reified E : Entity> update(predicate: Predicate<E>, noinline updateFn: (E) -> E) =
+    inline fun <reified E : Any> query(): List<E>? = query(E::class)
+    inline fun <reified E : Any> add(entity: E) = add(entity, E::class)
+    inline fun <reified E : Any> addNonPopulated(entity: E) = addNonPopulated(entity, E::class)
+    inline fun <reified E : Any> remove(predicate: Predicate<E>) = remove(predicate, E::class)
+    inline fun <reified E : Any> update(predicate: Predicate<E>, noinline updateFn: (E) -> E) =
         update(predicate, updateFn, E::class)
 }

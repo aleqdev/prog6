@@ -5,9 +5,9 @@ import tools.jackson.databind.SerializationFeature
 import tools.jackson.databind.cfg.DateTimeFeature
 import tools.jackson.dataformat.xml.XmlMapper
 import tools.jackson.module.kotlin.kotlinModule
+import tools.jackson.module.kotlin.readValue
 import java.io.Reader
 import java.io.Writer
-import tools.jackson.module.kotlin.readValue
 
 
 val xmlMapper: XmlMapper = XmlMapper.builder()
